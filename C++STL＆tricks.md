@@ -231,7 +231,11 @@ bool compare(string &x.string &y){return x+y<y+x;}
      string a_sum=accumulate(a.begin(), a.end(),string("out: "));
     ```
 
-* 
+* 自定义函数在sort 和priority_queue中的区别
+
+  * sort中表示 a b 按照前后排序的条件
+  * priority_queue中表示相反
+
 
 ## **数学上的trick**
 
@@ -992,6 +996,14 @@ void swap (list& x)   交换两个list中的元素
 void resize (size_type n, value_type val = value_type())   将list中有效元素个数改变 到n个，多出的元素用val 填充
 void clear() 清空list中的有效元素
 
+## 注意点：
+
+通过iterator 与for 循环遍历节点时，如果需要删除当前节点，使用erase时
+
+需要及时break； 要不然再it++ 会产生bug。因为此时it已经被删除，无法被 ++；
+
+
+
 
 # 类
 
@@ -1055,6 +1067,8 @@ inline
 ## 构造函数与析构函数
 
 一般放置于 **public** 部分
+
+**如果构造函数中 需要用到class里自带的变量，那么变量需要为static const类型**
 
 ```c++
 Stock(const string & str="Error",long n=0,double pr = 0.0);
@@ -1205,4 +1219,19 @@ k0=q;//k0=k=0;
 ```
 
 也就是说只有在初始化的时候才能设置引用，而不能后天 通过赋值 而改变引用。此时的赋值只是简单的value的给予。
+
+# struct
+
+```c++
+/**
+ * Definition for singly-linked list.
+ * struct ListNode {
+ *     int val;
+ *     ListNode *next;
+ *     ListNode() : val(0), next(nullptr) {}
+ *     ListNode(int x) : val(x), next(nullptr) {}
+ *     ListNode(int x, ListNode *next) : val(x), next(next) {}
+ * };
+ */
+```
 

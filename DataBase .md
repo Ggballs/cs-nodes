@@ -1383,11 +1383,90 @@ define trigger overdraft on update of account T
 
     ![image-20220520004452373](C:\Users\22470\AppData\Roaming\Typora\typora-user-images\image-20220520004452373.png)
 
+## 6.4buffer pool
+
+把数据分为若干的【页】，作为磁盘喝内存交互的基本单位，默认大小16KB
+
+- 基本结构
+
+  <img src="https://cdn.xiaolincoding.com/gh/xiaolincoder/ImageHost4@main/mysql/innodb/bufferpool%E5%86%85%E5%AE%B9.drawio.png" alt="img" style="zoom:33%;" />
+
+  且buffer pool 也会再继续细分， 编程缓存页1 2 3.。。 
+
+  同时在buffer pool 的最首部， 还有控制块1 2 3 .。。来对对应的缓存块进行管理，提高处理速度
+
+  查找一条记录， 需要将真个Page 的数据加载到BUffer Pool中（因为通过索引。只能定位到磁盘中的页）
+
+## 6.4.1 如何管理
+
+- 空闲页
+
+  <img src="https://cdn.xiaolincoding.com/gh/xiaolincoder/ImageHost4@main/mysql/innodb/freelist.drawio.png" alt="img" style="zoom:33%;" />
+
+  将空闲缓存页的【控制块】作为节点存放在Free链表里
+
+- 脏页
+
+  更新数据时， 先将buffer pool 对应的缓存页标记为【脏页】，并在脏页中书写数据
+
+  然后由后台线程 将脏页写道磁盘中
+
+  类似【Free链表】  同时也有【Flush链表】用来标记脏页
+
+  
+
+  下面几种情况会触发脏页的刷新：
+
+  - 当 redo log 日志满了的情况下，会主动触发脏页刷新到磁盘；
+  - Buffer Pool 空间不足时，需要将一部分数据页淘汰掉，如果淘汰的是脏页，需要先将脏页同步到磁盘；
+  - MySQL 认为空闲时，后台线程回定期将适量的脏页刷入到磁盘；
+  - MySQL 正常关闭之前，会把所有的脏页刷入到磁盘；
+
+- 提高缓存命中率
+
+  - LRU‘
+
+    脏页和干净页都可以在LRU中
+
+    (脏页在磁盘更新完毕后也编程干净页)
+
+    存在的问题
+
+    1. 预读失效
+
+       预读：将即将要读取的page周围一小部分page提前加载
+
+       但是可能这些**被提前加载进来的数据页，并没有被访问**，相当于这个预读是白做了，这个就是**预读失效**。
+
+       且在LRU中， 会将这些数据页加载到链表头部， 且可能会造成尾部的page丢失
+
+        
+
+       解决方法：
+
+       分为young 区和old 区（young 尾接old 头）
+
+       一般时63 ： 37
+
+       预读页只需要加入到old 区域头部，  将真正被访问的加入young 区域头部
+
+    2. buffer pool 污染
+
+       在执行集中的大量数据扫描时（如ALL）， 在buffer pool 优先的空间情况下， 会将LRU中的热点数据全部清除掉
+
+        
+
+       解决方法：
+
+       提高加载进入young 区的门槛
+
+       （mysql是在增加进young区前  增加一个【停留在old区的时间判断】）
+
+       需要同时满足【被访问】以及【在old 区域听六时间超过1秒】才能被插入young区头部
+
 # 7.index and hash
 
 ## 7.1basic concepts
-
-数据量大的时候用才有效
 
 ![image-20220520085543031](C:\Users\22470\AppData\Roaming\Typora\typora-user-images\image-20220520085543031.png)![image-20220520090000037](C:\Users\22470\AppData\Roaming\Typora\typora-user-images\image-20220520090000037.png)
 
@@ -1422,7 +1501,7 @@ index是由一个个index entry组成的，每个entry由两部分组成：searc
 
 如果包含记录的文件按照某个搜索码指定的顺序排序 那么该搜索码对应的索引称为主索引（也称聚集索引）
 
-- 主索引
+- 主索引（聚簇索引）
 
   在某个搜索码上有主索引的文件为索引顺序文件
 
@@ -1432,7 +1511,7 @@ index是由一个个index entry组成的，每个entry由两部分组成：searc
 
   ①稠密索引 search key对应的每一个值 都有一个索引记录（index entry）
 
-  ②系数索引 并不是全部的search key 都有
+  ②稀疏索引 并不是全部的search key 都有index
 
   ![image-20220520091040470](C:\Users\22470\AppData\Roaming\Typora\typora-user-images\image-20220520091040470.png)
 
@@ -1454,11 +1533,42 @@ index是由一个个index entry组成的，每个entry由两部分组成：searc
 
     如果索引是为每一个块 保存一个 index 的sparse index  之哟啊没有新快产生 则无需改动  如果有 则把块的第一个search key 插入index中
 
-- 辅助索引
+- 辅助索引（二级索引）
 
   ![image-20220520092120860](C:\Users\22470\AppData\Roaming\Typora\typora-user-images\image-20220520092120860.png)
 
   必须为dense index
+  
+- 联合索引
+
+  ```sql
+  CREATE INDEX index_product_no_name ON product(product_no, name);
+  ```
+
+  如果按照 （a，b，c）建立索引， 那么按照 a b c 的顺序进行类似字符串的排序
+
+  类似如此的索引：
+
+  - where a=1；
+  - where a=1 and b=2 and c=3；
+  - where a=1 and b=2；
+
+  可以工作， 而且a b c顺序可以变更， 因为有优化器的存在
+
+  但是类似：
+
+  - where b=2；
+  - where c=3；
+  - here b=2 and c=3；
+
+  会失效， 因为没有前置的tuple（a for b，a b for c），此时时无序的，无法按照B+树查询
+
+  遇到范围搜索就只能匹配到范围搜索即退出索引了， 后面的无法用到索引。
+
+  - 建立联合索引的优先级
+
+    区分度越高， 越优先 （区分度 = distinct（column） /count（*））
+
 
 ## 7.3B+ Tree Index Files
 
@@ -1605,6 +1715,37 @@ consists  of several B+ trees
   bloom filter
 
   一个0/1数组 
+
+## 7.5索引失效
+
+1. 使用做或者左右模糊匹配时
+2. 使用计算， 函数， 类型转换操作时
+3. 联合索引不满足最左匹配原则时
+4. where 中 or 前为索引， or 后不是索引
+
+可以使用explain 语句来查看是否使用索引
+
+主要查看 type 
+
+- All（全表扫描）；（最差的，也就是索引失效）
+- index（全索引扫描）；（差不多差， 队索引表进行全扫描， 好处时不再需要排序）
+- range（索引范围扫描）；（这一级别以上就会因为索引的使用而变得非常efficient）
+
+- ref（非唯一索引扫描）；或者是唯一索引的非唯一性前缀， 因为非唯一所以需要在目标值附近进行小范围扫描
+- eq_ref（唯一索引扫描）；使用主键或者唯一索引时使用
+- const（结果只有一条的主键或唯一索引扫描）。
+
+## 7.6用B+ 树的原因
+
+MYSQL时会将数据持久化存在硬盘的，而树的高度决定了磁盘I/O操作的次数，  B+树为多叉树， 可以将树的高度变矮，适合存储
+
+具体原因还有
+
+- B+树非叶节点不存饭实际的数据， 进存放索引，相比（存储既存索引又存记录的）B树 B+树的非叶子节点可以存放更多索引， 因此 B + 树比B树更【矮胖】 方便查找（使用 I/O的次数更少）
+- B + 树有大量荣誉节点， 让B+ 树载插入删除的效率都更高
+- B+树的叶子节点用链表连接，有利于范围查询， B树只能通过遍历INDEX树来完成，效率远不如B + 树
+
+
 
 # 8.Query Processing
 
@@ -2226,6 +2367,63 @@ else：
 
 如此时T5 可以在任何时间进行 T2 T3 必须在T1之后执行
 
+## 10.9事务的隔离级别
+
+并发时可能出现的问题  严重性依次递减
+
+- 脏读 ： 事务B读取到了 事务A还未修改完毕的 数据，（或者读取之后A发生了回滚）
+- 不可重复读 与上次同样， 只不过效果是2次读取的数据不同
+- 幻读： 一个事务多次查询满足查询条件的记录数量， 发现前后的数量不同
+
+避免发生以上问题， 出现了四个隔离界别， 隔离级别依次越高， 性能越低，但也越安全
+
+- 读未提交（ read uncommitted） 一个事务未提交， 他做的变更就能背其他食物看到
+
+  实现 ： 直接读取就行
+
+- 读提交（read committed） 一个事务提交后， 他做的变更才能背其他事务看到
+
+  实现 ： 下条讲述：
+
+- 可重复读  ： 一个事务执行时 看到的数据跟 这个事务启动时看到的是一只的（MYSQL InnoDB 默认隔离界别）
+
+  实现： 通过【Read View】 来实现（相当于数据快照） 载每次读取前生成
+
+  读提交是在【每次语句执行前】都会生成一个Read View 
+
+  可重复读 是在【启动事务】时生成一个Read View
+
+- 串行化 （ serializable） 给记录加上读写锁， 多个事务不饿能同时队一个item 发生读写冲突
+
+<img src="https://img-blog.csdnimg.cn/img_convert/4e98ea2e60923b969790898565b4d643.png" alt="图片" style="zoom:33%;" />
+
+<img src="https://img-blog.csdnimg.cn/img_convert/d5de450e901ed926d0b5278c8b65b9fe.png" alt="图片" style="zoom:33%;" />
+
+
+
+- 在「读未提交」隔离级别下，事务 B 修改余额后，虽然没有提交事务，但是此时的余额已经可以被事务 A 看见了，于是事务 A 中余额 V1 查询的值是 200 万，余额 V2、V3 自然也是 200 万了；
+- 在「读提交」隔离级别下，事务 B 修改余额后，因为没有提交事务，所以事务 A 中余额 V1 的值还是 100 万，等事务 B 提交完后，最新的余额数据才能被事务 A 看见，因此额 V2、V3 都是 200 万；
+- 在「可重复读」隔离级别下，事务 A 只能看见启动事务时的数据，所以余额 V1、余额 V2 的值都是 100 万，当事务 A 提交事务后，就能看见最新的余额数据了，所以余额 V3 的值是 200 万；
+- 在「串行化」隔离级别下，事务 B 在执行将余额 100 万修改为 200 万时，由于此前事务 A 执行了读操作，这样就发生了读写冲突，于是就会被锁住，直到事务 A 提交后，事务 B 才可以继续执行，所以从 A 的角度看，余额 V1、V2 的值是 100 万，余额 V3 的值是 200万。
+
+
+
+## 10.10 Read View在MVCC里的工作
+
+<img src="https://cdn.xiaolincoding.com/gh/xiaolincoder/ImageHost4@main/mysql/%E4%BA%8B%E5%8A%A1%E9%9A%94%E7%A6%BB/readview%E7%BB%93%E6%9E%84.drawio.png" alt="img" style="zoom:53%;" />
+
+max_trx_id chaung'jian全局事务中最大事务id + 1
+
+<img src="https://cdn.xiaolincoding.com/gh/xiaolincoder/ImageHost4@main/mysql/%E4%BA%8B%E5%8A%A1%E9%9A%94%E7%A6%BB/ReadView.drawio.png" alt="img" style="zoom:50%;" />
+
+- 小于min _trx_id ： 对于当前事务【可见】
+- 大于min_trx_id 小于 max trx_id : 需要判断是否在m_ids 中：
+  - 在的话，说明还在活跃中（未被提交） 对当前事务不可见
+  - 不在的话， 表示当前事务已经提交， 所以可见
+- 大于 max_trx_id :表示在创建Read View 后才启动的事务 生成的数据， 所以该版本的记录对当前事务不可见
+
+
+
 # 11.Concurrency Control 
 
 ## 11.1Lock
@@ -2429,7 +2627,163 @@ graph protocol
 
   需要时X / SIX / IX 那么parent IX / SIX
 
+## 11.5锁的分类
+
+全局锁
+
+​			锁之后数据库就处于只读状态了
+
+表级锁
+
+- 表锁
+
+  可以有read 锁（） 和write锁（）
+
+- 元数据锁（MDL）
+
+  目的：防止CRUD 和 对表的结构修改同时进行
+
+  分为MDL读锁 ： 在CRUD时
+
+  和    MDL写锁 ： 在对表结构修改时
+
+  - 缺陷：
+
+    MDL锁有个操作队列 （队列中 写锁的优先级高于读锁）
+
+    一旦有个长事务未被提交，那么后面就有可能出现队头阻塞现象
+
+- 意向锁（IX SIX IS）
+
+  目的： 方便查找表内数据（记录）是或否存在锁
+
+  满足基本的读写3条互斥原则
+
+  一般在给表内某些记录上锁前， 先在标记别上加一个【意向锁】（sleelect 也可按照格式添加意向锁）
+
+- AUTO_INC 锁
+
+行级锁
+
+- Record Lock 记录锁
+
+- Gap Lock 间隙锁， 锁定一个范围， 不包含记录本身
+
+  **间隙锁的意义只在于阻止区间被插入**
+
+  gap lock 之间不会发生冲突
+
+  - 插入意向锁 也属于间隙锁， 但是回合一i纪念馆存在的gap lock 产生冲突 会进入等待阶段
+
+    - 与gap lock 发生冲突
+
+    - 与唯一键（主键或唯一值的二级索引
+
+      插入新纪录时，会给已存在的记录加锁
+
+      主键： 在已提交或可重复度（默认）隔离级别下： 给记录加记录锁S型
+
+      唯一二级索引： 无论什么级别 都加next -key 锁
+
+- Next-Key Lock ： 上述二者的结合 解决【幻读】问题
+
+  mysql中的对记录加锁的基本单位 范围是前开后闭
+
+- 
+
+
+
+## 11.6 MYSQL加锁方式
+
+<img src="https://img-blog.csdnimg.cn/img_convert/954708d2f29c2a619e861e57cdf74c11.png" alt="图片" style="zoom:53%;" />
+
+- 唯一索引等值
+
+  先加个Next-Key Lock， 
+
+  - 如果值存在
+
+    <img src="https://img-blog.csdnimg.cn/img_convert/2a944fb385d1de277dbfdc78102f36ba.png" alt="图片" style="zoom:33%;" />
+
+    先加个（8，16】的锁
+
+    而后查到了id = 16 所以退化成记录锁， 就址在id  = 16 这一行
+
+  - 记录不存在
+
+    <img src="https://img-blog.csdnimg.cn/img_convert/d82332993969a223fa3433eaf5185134.png" alt="图片" style="zoom:33%;" />
+
+- 唯一索引 范围
+
+  <img src="https://img-blog.csdnimg.cn/img_convert/c12bdb8af1972d5f287978b489a83304.png" alt="图片" style="zoom:33%;" />
+
+  会话1 ： 先找id = 8的锁，存在，而后退化成记录锁
+
+  ​				再继续往后找存在的记录， 找到id  = 16 即停下来， 加上next-key lock（8，16】 16不满足  所以退化成（8，16）
+
+  id  > 2 ： 有（2，正无穷）的锁
+
+- 非唯一 等值
+
+  - **当查询的记录存在时，除了会加 next-key lock 外，还额外加间隙锁，也就是会加两把锁**。
+
+    查询b = 8， 先加(4,8] 还有（8，16）（有边界是下一个不满足条件的数）
+
+  - **当查询的记录不存在时，只会加 next-key lock，然后会退化为间隙锁，也就是只会加一把锁。**
+
+    b = 10， 
+
+    先加next-key lock (8,16] 不存在， 退化为间隙锁(8,16)
+
+- 非唯一索引 范围
+
+  区别： 不会退化成范围锁和记录锁
+
+  差b>= 8 and b < 9
+
+  b = 8， 先加next -key lock，（4，8】fa先有记录，但是不会退化
+
+  一致找， 直到第一个不满足的记录也就是b = 16， 有(8,16]锁
+
+- 非索引， 全局加锁
+
+  避免全局加锁， 可以加上limit 限制行数。
+
+## 11.7死锁情况
+
+**互斥、占有且等待、不可强占用、循环等待**
+
+<img src="https://cdn.xiaolincoding.com/gh/xiaolincoder/mysql/%E9%94%81/t_student.png" alt="img" style="zoom:33%;" />
+
+<img src="https://cdn.xiaolincoding.com/gh/xiaolincoder/mysql/%E9%94%81/ab%E4%BA%8B%E5%8A%A1%E6%AD%BB%E9%94%81.drawio.png" alt="img" style="zoom:50%;" />
+
+```sql
+select * from performance_schema.data_locks\G;
+#查看锁
+```
+
+1 2 阶段都加的间隙锁， 因为没有满足的条件， （20，30）
+
+间隙锁不互斥
+
+3 4 阶段都产生insert intention 锁， 范围也是（20，30） 
+
+lock status 都是waiting  且间隙锁和insert intention 是互斥的，所以A B都在等待对方的锁先释放。
+
+### 解决方法：
+
+**设置事务等待锁的超时时间**。当一个事务的等待时间超过该值后，就对这个事务进行回滚，于是锁就释放了，另一个事务就可以继续执行了。在 InnoDB 中，参数 `innodb_lock_wait_timeout` 是用来设置超时时间的，默认值时 50 秒。
+
+**开启主动死锁检测**。主动死锁检测在发现死锁后，主动回滚死锁链条中的某一个事务，让其他事务得以继续执行。将参数 `innodb_deadlock_detect` 设置为 on，表示开启这个逻辑，默认就开启。
+
 # 12.Recovery Sys
+
+undo的作用： 保证事务的Atomacy 原子性
+
+redo 的作用：
+
+- **实现事务的持久性，让 MySQL 有 crash-safe 的能力**，能够保证 MySQL 在任何时间段突然崩溃，重启后之前已提交的记录都不会丢失；
+- **将写操作从「随机写」变成了「顺序写」**，提升 MySQL 写入磁盘的性能。
 
 ## 12.1 failure classification
 
@@ -2469,9 +2823,9 @@ V 可以是NULL V1为NULL 表示插入  V2 为delete
 
 先写log 再 update
 
-观察是否已经commit 如果已经commit 那么就直接重新做（可能reflect 也可能中途crash）
+观察是否已经commit 如果已经commit 那么就直接重新做（可能reflect 也可能中途crash
 
-​																										而重做也没有风险
+而重做也没有风险
 
 如果没有commit 放到undo list
 
@@ -2734,3 +3088,122 @@ recovery process
 先读取checkpoints的dirtypage 和L 再更新
 
 第二站图为analysis pass时的dirty page table 和active T
+
+# 13.select 全过程
+
+<img src="https://cdn.xiaolincoding.com/gh/xiaolincoder/mysql/sql%E6%89%A7%E8%A1%8C%E8%BF%87%E7%A8%8B/mysql%E6%9F%A5%E8%AF%A2%E6%B5%81%E7%A8%8B.png" alt="查询语句执行流程" style="zoom: 50%;" />、
+
+- Server层 建立丽娜姐和分析执行SQL
+- 存储引擎负责数据的存储和提取
+
+## 13.1 连接器
+
+①功能：
+
+- 使server 端与客户端建立三次握手
+- 校验客户端username和passw
+- 检验用户的权限，后续的逻辑判断都会基于此时读取到的权限
+
+（为了节约建立连接的时间， 一般连接后处于长连接过程）
+
+②TCP长连接以下限制： 
+
+- 有限的连接数量
+- 有限的空置连接时间
+
+
+
+解决长连接占据内存问题：
+
+- 定期断开长连接
+- 客户端主动重置连接  使得内存得到释放，
+
+## 13.2 查询缓存
+
+1. 将SQL语句发送给缓存
+
+2. 判断是否为select 语句  ， 是则直接跳到Query Cathe 里用map找对应的value，如果没有则继续
+3. else 则继续执行， 进入下一步， 直到找到对应结果之后， 将其作为value 加载进入缓存中
+
+## 13.3解析SQL
+
+执行工具 ： 解析器
+
+1. b词法分析
+
+   根据字符串识别出关键字， 构建【SQL语法树】，
+
+   （目的 ： 方便找到对应的关键字 ： SQL类型， 表明， 字段名， where 条件等）
+
+2. 语法分析
+
+   判断是否符合语法 以及 拼写是否正确
+
+   （但是 检查表和字段是否存在  并不是此步的工作）
+
+## 13.4 执行SQL
+
+- 预处理（prepare）
+
+  1. 查询SQL语句中的table 和 字段（tuple 等)是否存在
+
+     （mysql5.7 是放在prepare 之前做， 但是也不是在解析器做， 8.0后就在解析器里了）
+
+  2. 将* 扩展为表上所有列
+
+- 优化器（optimise）
+
+  主要目的　：找到最优化的SQL查询语句的 执行方案（主要是索引部分）
+
+- 执行器
+
+  有三种执行方式
+
+  - primary key 查询
+
+    - 执行器第一次查询，会调用 read_first_record 函数指针指向的函数，因为优化器选择的访问类型为 **const**，这个函数指针被指向为 InnoDB 引擎索引查询的接口，把条件 `id = 1` 交给存储引擎，**让存储引擎定位符合条件的第一条记录**。
+    - 存储引擎通过主键索引的 B+ 树结构定位到 id = 1的第一条记录，如果记录是不存在的，就会向执行器上报记录找不到的错误，然后查询结束。如果记录是存在的，就会将记录返回给执行器；
+    - 执行器从存储引擎读到记录后，接着判断记录是否符合查询条件，如果符合则发送给客户端，如果不符合则跳过该记录。
+    - 执行器查询的过程是一个 while 循环，所以还会再查一次，但是这次因为不是第一次查询了，所以会调用 read_record 函数指针指向的函数，因为优化器选择的访问类型为 const，这个函数指针被指向为一个永远返回 - 1 的函数，所以当调用该函数的时候，执行器就退出循环，也就是结束查询了。
+
+  - 全表扫描
+
+    - 执行器第一次查询，会调用 read_first_record 函数指针指向的函数，因为优化器选择的访问类型为 all，这个函数指针被指向为 InnoDB 引擎全扫描的接口，**让存储引擎读取表中的第一条记录**；
+    - 执行器会判断读到的这条记录的 name 是不是 iphone，如果不是则跳过；如果是则将记录发给客户的（是的没错，Server 层每从存储引擎读到一条记录就会发送给客户端，之所以客户端显示的时候是直接显示所有记录的，是因为客户端是等查询语句查询完成后，才会显示出所有的记录）。
+    - 执行器查询的过程是一个 while 循环，所以还会再查一次，会调用 read_record 函数指针指向的函数，因为优化器选择的访问类型为 all，read_record 函数指针指向的还是 InnoDB 引擎全扫描的接口，所以接着向存储引擎层要求继续读刚才那条记录的下一条记录，存储引擎把下一条记录取出后就将其返回给执行器（Server层），执行器继续判断条件，不符合查询条件即跳过该记录，否则发送到客户端；
+    - 一直重复上述过程，直到存储引擎把表中的所有记录读完，然后向执行器（Server层） 返回了读取完毕的信息；
+    - 执行器收到存储引擎报告的查询完毕的信息，退出循环，停止查询。
+
+  - 索引下推
+
+    5.6推出的查询优化策略
+
+    （出现原因： 在使用 **联合索引**时， 查询在查询至范围查询 即会停止匹配， 
+
+    所以出现 **where age > 20 and reward = 100000;** 时，则会在and 之前停止使用索引查询， 效果很差， 见下流程）
+
+    - Server层调用 存储引擎接口查到第一条age > 20 的二级索引记录
+    - 存储根据二级索引的B+树定位到记录后， 返回primary key 的值后， 进行 **回表操作**（拿着主键会表找到记录） 将完整的record 返回给Server层
+    - Server层判断reward 是否为100000 并将满足的返回客户端
+    - 继续找到下一条记录， 直到将表种所有记录读完 
+
+    效果很差， 如果介入了索引下推，过程如下：
+
+    - Server层调用 存储引擎接口查到第一条age > 20 的二级索引记录
+    - 存储引擎定位到二级索引后， **不执行回标操作** 而是判断 **索引中包括的tuple**的条件，（reward 是否等于100000） 成立才回表 继返回完整record
+    - Server层再判断其他条件（此次查询无其他条件） 是否成立， 成立则返回客户端
+    - 反复而直至读完记录。
+
+    当你发现执行计划里的 Extr 部分显示了 “Using index condition”，说明使用了索引下推。
+
+  
+
+# 14.执行update 全过程
+
+- 客户端先通过连接器建立连接，连接器自会判断用户身份；
+- 因为这是一条 update 语句，所以不需要经过查询缓存，但是表上有更新语句，是会把整个表的查询缓存情空的，所以说查询缓存很鸡肋，在 MySQL 8.0 就被移除这个功能了；
+- 解析器会通过词法分析识别出关键字 update，表名等等，构建出语法树，接着还会做语法分析，判断输入的语句是否符合 MySQL 语法；
+- 预处理器会判断表和字段是否存在；
+- 优化器确定执行计划，因为 where 条件中的 id 是主键索引，所以决定要使用 id 这个索引；
+- 执行器负责具体执行，找到这一行，然后更新。
+
